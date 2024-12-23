@@ -64,14 +64,57 @@ def send_catalog(message):
         bot.reply_to(message, "Каталог порожній. Адміністратор має додати товари.")
         return
 
-    catalog_text = "\n".join([f"{p[0]}. {p[1]} - {p[2]} грн" for p in products])
-    bot.reply_to(message, f"📋 Наші товари:\n{catalog_text}\n\n"
-                          "Напишіть номер товару, щоб оформити замовлення.")
+    markup = InlineKeyboardMarkup()
+    for product in products:
+        button_text = f"{product[1]} - {product[2]} грн"
+        callback_data = f"product_{product[0]}"
+        markup.add(InlineKeyboardButton(button_text, callback_data=callback_data))
+
+    bot.reply_to(message, "📋 Наші товари: "
+                          " Щоб дізнатись більше, натисніть на товар."
+                          " Щоб замовити товар введіть його номер", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("product_"))
+def product_details(call):
+    product_id = int(call.data.split("_")[1])
+    conn = sqlite3.connect("store.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT name, price, description FROM products WHERE id = ?", (product_id,))
+    product = cursor.fetchone()
+    conn.close()
+
+    if product:
+        bot.send_message(call.message.chat.id, f"📄 Деталі товару:\n\n"
+                                               f"Назва: {product[0]}\n"
+                                               f"Ціна: {product[1]} грн\n"
+                                               f"Опис: {product[2]}")
+    else:
+        bot.send_message(call.message.chat.id, "❌ Товар не знайдено.")
+
+    bot.answer_callback_query(call.id)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("product_"))
+def product_details(call):
+    product_id = int(call.data.split("_")[1])
+    conn = sqlite3.connect("store.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT name, price, description FROM products WHERE id = ?", (product_id,))
+    product = cursor.fetchone()
+    conn.close()
+
+    if product:
+        bot.send_message(call.message.chat.id, f"📄 Деталі товару:\n"
+                                             f"Назва: {product[0]}\n"
+                                             f"Ціна: {product[1]} грн\n"
+                                             f"Опис: {product[2]}\n")
+    else:
+        bot.send_message(call.message.chat.id, "❌ Товар не знайдено.")
+
+    bot.answer_callback_query(call.id)
 
 @bot.message_handler(func=lambda message: message.text.isdigit())
 def handle_order(message):
     product_id = int(message.text)
-
     conn = sqlite3.connect("store.db")
     cursor = conn.cursor()
     cursor.execute("SELECT id, name, price FROM products WHERE id = ?", (product_id,))
@@ -101,31 +144,30 @@ def handle_order(message):
         bot.reply_to(message, "❌ Неправильний номер товару. Спробуйте ще раз.")
     conn.close()
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("confirm_"))
-def confirm_order(call):
-    order_id = int(call.data.split("_")[1])
 
-    conn = sqlite3.connect("store.db")
-    cursor = conn.cursor()
-    cursor.execute("UPDATE orders SET status = 'paid' WHERE id = ?", (order_id,))
-    conn.commit()
+@bot.callback_query_handler(func=lambda call: call.data.startswith("confirm_") or call.data.startswith("cancel_"))
+def handle_payment_buttons(call):
+    try:
+        order_id = int(call.data.split("_")[1])
+        action = call.data.split("_")[0]
 
-    bot.answer_callback_query(call.id, f"Оплата за рахунком {order_id} підтверджена!")
+        conn = sqlite3.connect("store.db")
+        cursor = conn.cursor()
 
-    conn.close()
+        if action == "confirm":
+            cursor.execute("UPDATE orders SET status = 'paid' WHERE id = ?", (order_id,))
+            conn.commit()
+            bot.send_message(call.message.chat.id, f"✅ Оплата за рахунком {order_id} підтверджена!")
+        elif action == "cancel":
+            cursor.execute("UPDATE orders SET status = 'canceled' WHERE id = ?", (order_id,))
+            conn.commit()
+            bot.send_message(call.message.chat.id, f"❌ Оплата за рахунком {order_id} скасована.")
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith("cancel_"))
-def cancel_order(call):
-    order_id = int(call.data.split("_")[1])
-
-    conn = sqlite3.connect("store.db")
-    cursor = conn.cursor()
-    cursor.execute("UPDATE orders SET status = 'canceled' WHERE id = ?", (order_id,))
-    conn.commit()
-
-    bot.answer_callback_query(call.id, f"Оплата за рахунком {order_id} скасована.")
-
-    conn.close()
+        conn.close()
+        bot.answer_callback_query(call.id, "Дія виконана.")  # Обов'язкова відповідь
+    except Exception as e:
+        print(f"Error in handle_payment_buttons: {e}")
+        bot.answer_callback_query(call.id, "Сталася помилка.")
 
 
 @bot.message_handler(commands=['help'])
@@ -224,7 +266,7 @@ def handle_feedback(message):
     bot.reply_to(message, "Дякуємо за ваш відгук!")
 
 @bot.message_handler(commands=['start'])
-def start(message):
+def send_welcome(message):
     keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
     keyboard.add(KeyboardButton('/catalog'), KeyboardButton('/help'))
     keyboard.add(KeyboardButton('/info'), KeyboardButton('/feedback'))
